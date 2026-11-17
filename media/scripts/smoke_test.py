@@ -7,6 +7,8 @@ Checks:
   3. For every fixture: `ffmpeg -i` exits 1 and prints the "Stream #..: Audio: <codec>" line that
      yt-dlp parses when ffprobe is absent, and yt-dlp's exact extract-audio command (including
      -movflags) produces a ~1 s, non-silent float WAV.
+  3b. Every output format INTERSECT offers (WAV 32f/24/16, FLAC 24/16, resampling, dither) is
+     written with the plugin's exact ffmpeg arguments.
   4. With --ytdlp: downloads the official yt-dlp build for this platform (checked against
      SHA2-256SUMS) and imports fixtures through file:// URLs the way INTERSECT will, with our
      ffmpeg and qjs and no ffprobe. Also confirms yt-dlp detects our QuickJS.
@@ -41,6 +43,17 @@ YTDLP_ASSETS = {
     "win-arm64": "yt-dlp_win_arm64.zip",
 }
 YTDLP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
+# The plugin's output formats: (label, ffmpeg arguments as UrlImport::ffmpegOutputArgs builds them,
+# extension, text the "Stream ... Audio:" line must contain). Keep in sync with the plugin.
+OUTPUT_FORMATS = [
+    ("WAV 24-bit @ 44.1 kHz", "-c:a pcm_s24le -ar 44100", "wav", ["pcm_s24le", "44100 Hz"]),
+    ("WAV 16-bit @ 16 kHz, dithered", "-c:a pcm_s16le -af aresample=osr=16000:osf=s16:dither_method=triangular",
+     "wav", ["pcm_s16le", "16000 Hz"]),
+    ("FLAC 24-bit", "-c:a flac -sample_fmt s32 -bits_per_raw_sample 24", "flac", ["flac", "s32 (24 bit)"]),
+    ("FLAC 16-bit @ 48 kHz, dithered", "-c:a flac -sample_fmt s16 -af aresample=osr=48000:osf=s16:dither_method=triangular",
+     "flac", ["flac", "48000 Hz", "s16"]),
+]
+
 # yt-dlp's own pattern (postprocessor/ffmpeg.py, get_audio_codec without ffprobe).
 AUDIO_STREAM_RE = re.compile(
     r"Stream\s*#\d+:\d+(?:\[0x[0-9a-f]+\])?(?:\([a-z]{3}\))?:\s*Audio:\s*([0-9a-z]+)")
@@ -171,6 +184,18 @@ def main() -> int:
         if check(convert.returncode == 0, f"{fixture.name}: converts to WAV", convert.stderr[-400:]):
             check_wav(out, f"{fixture.name}: WAV is ~1 s and not silent")
 
+    print(f"== plugin output formats ({len(OUTPUT_FORMATS)})")
+    source = args.fixtures / "tone-opus.webm"
+    for label, ff_args, ext, expected in OUTPUT_FORMATS:
+        out = work / f"format-{len(label)}-{ext}.{ext}"
+        convert = run([str(ffmpeg), "-y", "-nostdin", "-loglevel", "error", "-i", str(source), "-vn",
+                       *ff_args.split(), str(out)])
+        if not check(convert.returncode == 0, f"{label}: converts", convert.stderr[-400:]):
+            continue
+        probe = run([str(ffmpeg), "-hide_banner", "-i", str(out)])
+        stream = next((line for line in probe.stderr.splitlines() if "Audio:" in line), "")
+        check(all(text in stream for text in expected), f"{label}: {', '.join(expected)}", stream.strip())
+
     if args.ytdlp:
         print("== yt-dlp (official build, file:// imports)")
         ytdlp = install_ytdlp(args.target, work)
@@ -195,6 +220,23 @@ def main() -> int:
                   f"yt-dlp runs without ffprobe ({name})")
             if ok:
                 check_wav(dest / "dl.wav", f"yt-dlp output of {name} is ~1 s and not silent")
+
+        # FLAC the way INTERSECT asks for it.
+        fixture = (args.fixtures / "tone-opus.webm").resolve()
+        dest = work / "ytdlp-flac"
+        shutil.rmtree(dest, ignore_errors=True)
+        dest.mkdir()
+        result = run([str(ytdlp), "--ignore-config", "--no-plugin-dirs", "--enable-file-urls",
+                      "--no-js-runtimes", "--js-runtimes", f"quickjs:{qjs}",
+                      "-f", "bestaudio/best", "-x", "--audio-format", "flac",
+                      "--ppa", "ExtractAudio+ffmpeg_o:-c:a flac -sample_fmt s32 -bits_per_raw_sample 24",
+                      "--ffmpeg-location", str(ffmpeg), "--fixup", "never",
+                      "-P", str(dest), "-o", "dl.%(ext)s",
+                      "--print", "after_move:[ix-done] %(filepath)s",
+                      "--", fixture.as_uri()], timeout=300)
+        flac = dest / "dl.flac"
+        check(result.returncode == 0 and flac.is_file() and flac.read_bytes()[:4] == b"fLaC",
+              "yt-dlp imports tone-opus.webm as FLAC", (result.stdout + result.stderr)[-800:])
 
     print(f"== {'PASS' if not failures else 'FAIL: ' + ', '.join(failures)}")
     return 0 if not failures else 1
