@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build the URL-import media tools for one INTERSECT platform and package them.
 #
-#   ffmpeg  audio-focused LGPL build: every demuxer, every audio decoder, PCM/WAV output only,
-#           no network, no ffprobe/ffplay. yt-dlp uses it to turn whatever audio a site serves
-#           into WAV.
+#   ffmpeg  audio-focused LGPL build: every demuxer, every audio decoder, PCM/WAV and FLAC
+#           output only, no network, no ffprobe/ffplay. yt-dlp uses it to turn whatever audio a
+#           site serves into WAV or FLAC.
 #   qjs     QuickJS-NG, the JavaScript runtime yt-dlp needs for YouTube.
 #
 # Both come from the official submodules in media/ffmpeg and media/quickjs.
@@ -77,7 +77,8 @@ ff_flags=(
     --disable-autodetect --disable-network --disable-doc --disable-debug --disable-x86asm
     --disable-ffplay --disable-ffprobe --disable-avdevice --disable-swscale
     --disable-decoders --enable-decoder="$decoders"
-    --disable-encoders --enable-encoder=pcm_s16le,pcm_s24le,pcm_f32le
+    # flac is FFmpeg's own (LGPL) encoder: no external library.
+    --disable-encoders --enable-encoder=pcm_s16le,pcm_s24le,pcm_f32le,flac
     # mp4 is here because yt-dlp passes -movflags to every ffmpeg call, and that option only
     # exists when a mov-family muxer is built.
     --disable-muxers --enable-muxer=wav,mp4,ipod,mov,matroska,webm,ogg,mp3,adts,flac
